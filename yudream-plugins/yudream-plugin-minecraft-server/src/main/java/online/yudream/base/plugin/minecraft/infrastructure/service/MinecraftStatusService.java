@@ -17,19 +17,79 @@ import java.util.ArrayList;
 import java.util.Hashtable;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-public class MinecraftStatusService {
+public class MinecraftStatusService implements AutoCloseable {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+
+    /**
+     * 单线路探测硬上限：ping 库在 DNS 挂起（解析不可达且无 OS 级超时）等场景可能长时间
+     * 不返回，而状态刷新是单线程每周期串行探测全部线路——一次挂起就会让整轮刷新停摆，
+     * 列表的「上次检测」时间随之冻结。超限即按离线落快照，宁可报一次探测超时。
+     */
+    static final long PROBE_DEADLINE_MS = 8_000L;
+
+    /** 探测执行池：给每次探测套硬上限用；卡死的探测被取消后不影响后续探测。 */
+    private final ExecutorService probePool = Executors.newFixedThreadPool(2, runnable -> {
+        Thread thread = new Thread(runnable, "minecraft-status-probe");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    /** 域名解析缓存：解析本身可能阻塞，既要有界也要避免每条线路每轮重复解析。 */
+    private final ConcurrentHashMap<String, ResolvedIp> resolvedIps = new ConcurrentHashMap<>();
+
+    private static final long RESOLVED_TTL_MS = 10 * 60 * 1000L;
+    private static final long UNRESOLVED_TTL_MS = 60 * 1000L;
+    private static final long RESOLVE_DEADLINE_MS = 1_500L;
+
+    private record ResolvedIp(String value, long expiresAtMs) {
+    }
+
+    @Override
+    public void close() {
+        probePool.shutdownNow();
+    }
 
     public MinecraftEndpointStatus ping(MinecraftServerEndpoint endpoint) {
         if (!endpoint.enabled()) {
             return MinecraftEndpointStatus.offline(endpoint.id(), "线路已停用");
         }
-        String target = null;
+        ProbeAttempt attempt = new ProbeAttempt();
+        Future<MinecraftEndpointStatus> probe = probePool.submit(() -> probeEndpoint(endpoint, attempt));
+        try {
+            return probe.get(PROBE_DEADLINE_MS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException hang) {
+            probe.cancel(true);
+            return MinecraftEndpointStatus.offline(endpoint.id(),
+                    "探测超时（" + PROBE_DEADLINE_MS / 1000 + " 秒无响应）（连接超时：被防火墙/安全组丢包，或服务端未响应）"
+                            + targetSuffix(attempt.target));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return MinecraftEndpointStatus.offline(endpoint.id(), "探测被中断" + targetSuffix(attempt.target));
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause() == null ? failed : failed.getCause();
+            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(cause, attempt.target));
+        }
+    }
+
+    /** 探测尝试的拨号目标（由探测线程写、等待方读，故用 volatile 持有）。 */
+    private static final class ProbeAttempt {
+        private volatile String target;
+    }
+
+    private MinecraftEndpointStatus probeEndpoint(MinecraftServerEndpoint endpoint, ProbeAttempt attempt) {
         try {
             if (endpoint.edition() == MinecraftEdition.BEDROCK) {
-                target = describeTarget(endpoint.host(), endpoint.port());
+                attempt.target = describeTarget(endpoint.host(), endpoint.port());
                 BedrockPingResponse response = MCPing.pingBedrock()
                         .address(endpoint.host(), endpoint.port())
                         .timeout(3000, 3000)
@@ -39,7 +99,7 @@ public class MinecraftStatusService {
                         List.of());
             }
             ResolvedAddress address = resolveJavaAddress(endpoint);
-            target = describeTarget(address.host(), address.port());
+            attempt.target = describeTarget(address.host(), address.port());
             MCPingResponse response = MCPing.pingModern()
                     .address(address.host(), address.port())
                     .timeout(3000, 3000)
@@ -48,29 +108,60 @@ public class MinecraftStatusService {
                     plainText(response.getVersionName()), response.getProtocolId(), response.getPing(), plainMotd(response.getMotd()),
                     favicon(response.getFavicon()), samplePlayers(response));
         } catch (RuntimeException e) {
-            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e, target));
+            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e, attempt.target));
         } catch (Error e) {
             // ping 库的类加载/链接失败等 Error 也按该线路离线落快照，不允许穿透杀死状态调度循环
             System.err.println("[minecraft-server] 线路探测异常 " + endpoint.host() + ":" + endpoint.port() + ": " + e);
-            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e, target));
+            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e, attempt.target));
         }
+    }
+
+    private static String targetSuffix(String target) {
+        return target == null || target.isBlank() ? "" : "（面板拨号目标 " + target + "）";
     }
 
     /**
      * 面板实际拨号目标：域名解析结果（含 SRV 重定向后的目标）。玩家侧能连而面板侧
      * 连不上时，第一嫌疑就是两侧解析到的地址不同（内网分割 DNS、显式端口与 SRV 不一致），
-     * 把解析结果带进提示即可一眼比对。
+     * 把解析结果带进提示即可一眼比对。解析带 1.5 秒上限并缓存，避免拖慢探测。
      */
-    static String describeTarget(String host, int port) {
+    String describeTarget(String host, int port) {
         if (host == null || host.isBlank()) {
             return "";
         }
-        try {
-            String ip = java.net.InetAddress.getByName(host).getHostAddress();
-            return ip.equals(host) ? host + ":" + port : host + " → " + ip + ":" + port;
-        } catch (java.net.UnknownHostException unresolved) {
-            return host + ":" + port + "（未解析出 IP）";
+        String ip = resolveIp(host);
+        return ip == null ? host + ":" + port + "（未解析出 IP）"
+                : ip.equals(host) ? host + ":" + port : host + " → " + ip + ":" + port;
+    }
+
+    /** 有界且带缓存的域名解析：解析失败按短 TTL 缓存，避免每轮重复阻塞。 */
+    private String resolveIp(String host) {
+        long now = System.currentTimeMillis();
+        ResolvedIp cached = resolvedIps.get(host);
+        if (cached != null && cached.expiresAtMs() > now) {
+            return cached.value();
         }
+        Callable<String> lookup = () -> {
+            try {
+                return java.net.InetAddress.getByName(host).getHostAddress();
+            } catch (java.net.UnknownHostException unresolved) {
+                return null;
+            }
+        };
+        Future<String> future = probePool.submit(lookup);
+        String value;
+        try {
+            value = future.get(RESOLVE_DEADLINE_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (TimeoutException | ExecutionException indeterminate) {
+            // 解析未在时限内返回：不缓存、不等待，本轮不展示解析结果
+            future.cancel(true);
+            return null;
+        }
+        resolvedIps.put(host, new ResolvedIp(value, now + (value == null ? UNRESOLVED_TTL_MS : RESOLVED_TTL_MS)));
+        return value;
     }
 
     /**

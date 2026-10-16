@@ -1,11 +1,14 @@
 package online.yudream.base.plugin.minecraft.infrastructure.service;
 
+import online.yudream.base.plugin.minecraft.domain.valobj.MinecraftEndpointStatus;
+import online.yudream.base.plugin.minecraft.domain.valobj.MinecraftServerEndpoint;
 import org.junit.jupiter.api.Test;
 
 import java.net.ConnectException;
 import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 离线原因提取：真因在异常链末端，不能被库的通用包装文案盖住。 */
@@ -65,12 +68,31 @@ class MinecraftStatusServiceTest {
     }
 
     @Test
+    void pingFallsBackToOfflineWithinDeadlineWhenProbeHangs() {
+        MinecraftServerEndpoint hanging = new MinecraftServerEndpoint(
+                "line-hang", "主线", "10.255.255.1", 41000, null, true, true, 0);
+        try (MinecraftStatusService service = new MinecraftStatusService()) {
+            long startedAt = System.currentTimeMillis();
+            MinecraftEndpointStatus status = service.ping(hanging);
+            long elapsed = System.currentTimeMillis() - startedAt;
+
+            // 探测不可达地址：要么按连接失败快速返回，要么在硬上限内按超时返回，绝不无限等待
+            assertEquals("OFFLINE", status.status());
+            assertNotNull(status.errorMessage());
+            assertTrue(elapsed <= MinecraftStatusService.PROBE_DEADLINE_MS + 4_000L,
+                    "探测必须在硬上限内返回，实际 " + elapsed + "ms");
+        }
+    }
+
+    @Test
     void describeTargetHandlesLiteralIpAndHostname() {
-        // 字面 IP 不重复展示箭头
-        assertEquals("127.0.0.1:25565", MinecraftStatusService.describeTarget("127.0.0.1", 25565));
-        // 域名解析成 IP 时以箭头展示解析结果（localhost 恒定可解析）
-        assertTrue(MinecraftStatusService.describeTarget("localhost", 41000).startsWith("localhost → "));
-        // 无法解析的域名不抛异常，标注未解析
-        assertTrue(MinecraftStatusService.describeTarget("no-such-host.invalid", 41000).contains("未解析出 IP"));
+        try (MinecraftStatusService service = new MinecraftStatusService()) {
+            // 字面 IP 不重复展示箭头
+            assertEquals("127.0.0.1:25565", service.describeTarget("127.0.0.1", 25565));
+            // 域名解析成 IP 时以箭头展示解析结果（localhost 恒定可解析）
+            assertTrue(service.describeTarget("localhost", 41000).startsWith("localhost → "));
+            // 无法解析的域名不抛异常，标注未解析
+            assertTrue(service.describeTarget("no-such-host.invalid", 41000).contains("未解析出 IP"));
+        }
     }
 }

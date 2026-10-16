@@ -11,7 +11,7 @@
     </parent>
 
     <artifactId>yudream-plugin-minecraft-server</artifactId>
-    <version>1.13.7</version>
+    <version>1.13.8</version>
 
     <build>
         <resources>

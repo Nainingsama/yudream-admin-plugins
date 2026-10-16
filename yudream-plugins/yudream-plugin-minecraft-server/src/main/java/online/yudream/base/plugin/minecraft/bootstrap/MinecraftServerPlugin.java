@@ -142,6 +142,8 @@ public class MinecraftServerPlugin implements YuDreamPlugin {
     @Override
     public void onEnable(PluginContext context) {
         MinecraftStatusService statusService = new MinecraftStatusService();
+        // 探测执行池随插件停用释放（探测带硬上限，池内线程不会长期占用）
+        context.onDispose(statusService);
         MinecraftServerDocumentRepository repository = new MinecraftServerDocumentRepository(context.documents());
         appService = new MinecraftServerAppService(repository, statusService, context);
         // 群服互联：出站=玩家事件回调后格式化转发；入站=订阅宿主消息总线写入拉取队列
