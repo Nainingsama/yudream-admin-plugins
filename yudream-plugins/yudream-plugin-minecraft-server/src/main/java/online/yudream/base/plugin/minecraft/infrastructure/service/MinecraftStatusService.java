@@ -37,12 +37,19 @@ public class MinecraftStatusService implements AutoCloseable {
      */
     static final long PROBE_DEADLINE_MS = 8_000L;
 
-    /**
-     * 探测执行池：给每次探测套硬上限用；卡死的探测被取消后不影响后续探测。
-     * 容量略大于调度器的按台并发数，避免健康探测排队被误判成超时。
-     */
+    /** 探测执行池：给每次探测套硬上限用；卡死的探测被取消后不影响后续探测。 */
     private final ExecutorService probePool = Executors.newFixedThreadPool(6, runnable -> {
         Thread thread = new Thread(runnable, "minecraft-status-probe");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    /**
+     * 解析执行池：与探测池分开——解析调用发生在探测线程内部，若共用同一个池，
+     * 探测线程等待自己提交的解析任务会互相占位（极端情况下集体饿死）。
+     */
+    private final ExecutorService resolvePool = Executors.newFixedThreadPool(2, runnable -> {
+        Thread thread = new Thread(runnable, "minecraft-status-resolve");
         thread.setDaemon(true);
         return thread;
     });
@@ -60,6 +67,7 @@ public class MinecraftStatusService implements AutoCloseable {
     @Override
     public void close() {
         probePool.shutdownNow();
+        resolvePool.shutdownNow();
     }
 
     public MinecraftEndpointStatus ping(MinecraftServerEndpoint endpoint) {
@@ -151,7 +159,7 @@ public class MinecraftStatusService implements AutoCloseable {
                 return null;
             }
         };
-        Future<String> future = probePool.submit(lookup);
+        Future<String> future = resolvePool.submit(lookup);
         String value;
         try {
             value = future.get(RESOLVE_DEADLINE_MS, TimeUnit.MILLISECONDS);

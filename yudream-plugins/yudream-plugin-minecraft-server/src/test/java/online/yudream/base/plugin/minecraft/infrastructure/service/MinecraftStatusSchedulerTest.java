@@ -121,4 +121,38 @@ class MinecraftStatusSchedulerTest {
             scheduler.close();
         }
     }
+
+    @Test
+    void watchdogRebuildsDispatchWhenItStalls() {
+        MinecraftServerAppService appService = mock(MinecraftServerAppService.class);
+        when(appService.enabledServerIds()).thenReturn(List.of("s1"));
+
+        // 极短看门狗周期 + 很长派发周期：窗口内只有看门狗动作，避免真实派发掩盖人造停摆
+        MinecraftStatusScheduler scheduler =
+                new MinecraftStatusScheduler(appService, 60_000L, 60_000L, 200L, 100L);
+        scheduler.start();
+        try {
+            // 模拟调度线程被卡住：派发时间戳人为拨到很久以前
+            java.lang.reflect.Field field = MinecraftStatusScheduler.class.getDeclaredField("lastDispatchAtMs");
+            field.setAccessible(true);
+            field.setLong(scheduler, System.currentTimeMillis() - 10_000L);
+            long stalledValue = scheduler.lastDispatchAtMs();
+
+            // 看门狗应判定停摆并重建：时间戳被重置为当前时刻（说明调度被重新创建）
+            long deadline = System.currentTimeMillis() + 5_000L;
+            boolean rebuilt = false;
+            while (System.currentTimeMillis() < deadline) {
+                if (scheduler.lastDispatchAtMs() > stalledValue) {
+                    rebuilt = true;
+                    break;
+                }
+                Thread.sleep(50);
+            }
+            assertTrue(rebuilt, "看门狗应在判定停摆后重建调度，使派发时间戳重新前进");
+        } catch (ReflectiveOperationException | InterruptedException failure) {
+            throw new AssertionError("看门狗测试失败", failure);
+        } finally {
+            scheduler.close();
+        }
+    }
 }
