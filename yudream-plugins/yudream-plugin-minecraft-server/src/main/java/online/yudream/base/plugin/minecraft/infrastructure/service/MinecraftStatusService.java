@@ -61,8 +61,20 @@ public class MinecraftStatusService implements AutoCloseable {
     private static final long UNRESOLVED_TTL_MS = 60 * 1000L;
     private static final long RESOLVE_DEADLINE_MS = 1_500L;
 
+    /**
+     * 兜底探测地址缓存（端点 → 主机）：面板与节点同机部署时，面板经公网地址访问自己的
+     * 游戏端口常被网关的 NAT 回环策略拒绝（玩家从外网访问正常），此时改用本机/网关地址
+     * 才能探测成功。命中的兜底地址记住一段时间，后续周期直接用它，避免每轮重试候选。
+     */
+    private final ConcurrentHashMap<String, String> reachedHosts = new ConcurrentHashMap<>();
+
+    private static final long REACHED_TTL_MS = 10 * 60 * 1000L;
+
     private record ResolvedIp(String value, long expiresAtMs) {
     }
+
+    /** 兜底候选地址（同机部署的可达路径）：回环、Docker Desktop 别名、本机网段网关与本机地址。 */
+    static final List<String> LOOPBACK_CANDIDATES = List.of("127.0.0.1", "host.docker.internal");
 
     @Override
     public void close() {
@@ -74,14 +86,96 @@ public class MinecraftStatusService implements AutoCloseable {
         if (!endpoint.enabled()) {
             return MinecraftEndpointStatus.offline(endpoint.id(), "线路已停用");
         }
-        ProbeAttempt attempt = new ProbeAttempt();
-        Future<MinecraftEndpointStatus> probe = probePool.submit(() -> probeEndpoint(endpoint, attempt));
+        String configured = endpoint.host();
+        String preferred = preferredHost(endpoint);
+        MinecraftEndpointStatus primary = probeWithDeadline(endpoint, preferred, PROBE_DEADLINE_MS);
+        if ("ONLINE".equals(primary.status())) {
+            reachedHosts.put(endpoint.id(), preferred);
+            return primary;
+        }
+        // 公网地址不可达（同机部署的 NAT 回环不通、仅外网放行等）：依次尝试本机/网关地址。
+        // 兜底总耗时另设预算：候选逐个串行，不能把一条线路的探测拖成分钟级。
+        long budgetEnd = System.currentTimeMillis() + FALLBACK_BUDGET_MS;
+        for (String candidate : loopbackCandidates(configured)) {
+            long remaining = budgetEnd - System.currentTimeMillis();
+            if (remaining <= 0) {
+                break;
+            }
+            MinecraftEndpointStatus fallback = probeWithDeadline(endpoint, candidate,
+                    Math.min(FALLBACK_DEADLINE_MS, remaining));
+            if ("ONLINE".equals(fallback.status())) {
+                reachedHosts.put(endpoint.id(), candidate);
+                return fallback;
+            }
+        }
+        // 全部不可达：报配置地址的失败原因（含实际拨号目标），保持运维可见
+        return primary;
+    }
+
+    /** 当前优先使用的主机：已确认可达的兜底地址（带 TTL）优先，否则用配置地址。 */
+    String preferredHost(MinecraftServerEndpoint endpoint) {
+        String cached = reachedHosts.get(endpoint.id());
+        return cached == null || cached.isBlank() ? endpoint.host() : cached;
+    }
+
+    /**
+     * 同机部署的兜底候选：回环地址、Docker Desktop 别名，以及本机各网段的 .1 网关
+     * （容器默认桥与自定义桥都把宿主配成 .1，游戏端口发布在宿主上，经网关可达）。
+     */
+    List<String> loopbackCandidates(String configuredHost) {
+        List<String> candidates = new ArrayList<>(LOOPBACK_CANDIDATES);
         try {
-            return probe.get(PROBE_DEADLINE_MS, TimeUnit.MILLISECONDS);
+            java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                java.net.NetworkInterface network = interfaces.nextElement();
+                if (!network.isUp() || network.isLoopback()) {
+                    continue;
+                }
+                for (java.net.InterfaceAddress address : network.getInterfaceAddresses()) {
+                    java.net.InetAddress local = address.getAddress();
+                    if (local == null || local.getAddress() == null || local.getAddress().length != 4) {
+                        continue;
+                    }
+                    String host = local.getHostAddress();
+                    if (host != null && !host.isBlank()) {
+                        candidates.add(host);
+                    }
+                    byte[] gateway = local.getAddress().clone();
+                    gateway[3] = 1;
+                    candidates.add(java.net.InetAddress.getByAddress(gateway).getHostAddress());
+                }
+            }
+        } catch (java.net.SocketException | java.net.UnknownHostException ignored) {
+            // 网卡枚举失败：仅用固定候选（回环/Docker 别名）
+        }
+        List<String> unique = new ArrayList<>();
+        for (String candidate : candidates) {
+            if (candidate == null || candidate.isBlank() || candidate.equals(configuredHost) || unique.contains(candidate)) {
+                continue;
+            }
+            unique.add(candidate);
+            if (unique.size() >= MAX_FALLBACK_CANDIDATES) {
+                break;
+            }
+        }
+        return unique;
+    }
+
+    private static final long FALLBACK_DEADLINE_MS = 3_000L;
+    /** 兜底候选总预算：候选串行尝试，整体不超过该时长。 */
+    static final long FALLBACK_BUDGET_MS = 6_000L;
+    private static final int MAX_FALLBACK_CANDIDATES = 6;
+
+    /** 以指定主机探测一次（单次探测套硬上限，卡死不影响调用方）。 */
+    private MinecraftEndpointStatus probeWithDeadline(MinecraftServerEndpoint endpoint, String host, long deadlineMs) {
+        ProbeAttempt attempt = new ProbeAttempt();
+        Future<MinecraftEndpointStatus> probe = probePool.submit(() -> probeEndpoint(endpoint, host, attempt));
+        try {
+            return probe.get(deadlineMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException hang) {
             probe.cancel(true);
             return MinecraftEndpointStatus.offline(endpoint.id(),
-                    "探测超时（" + PROBE_DEADLINE_MS / 1000 + " 秒无响应）（连接超时：被防火墙/安全组丢包，或服务端未响应）"
+                    "探测超时（" + deadlineMs / 1000 + " 秒无响应）（连接超时：被防火墙/安全组丢包，或服务端未响应）"
                             + targetSuffix(attempt.target));
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
@@ -97,19 +191,20 @@ public class MinecraftStatusService implements AutoCloseable {
         private volatile String target;
     }
 
-    private MinecraftEndpointStatus probeEndpoint(MinecraftServerEndpoint endpoint, ProbeAttempt attempt) {
+    private MinecraftEndpointStatus probeEndpoint(MinecraftServerEndpoint endpoint, String host, ProbeAttempt attempt) {
+        String dialHost = host == null || host.isBlank() ? endpoint.host() : host;
         try {
             if (endpoint.edition() == MinecraftEdition.BEDROCK) {
-                attempt.target = describeTarget(endpoint.host(), endpoint.port());
+                attempt.target = describeTarget(dialHost, endpoint.port());
                 BedrockPingResponse response = MCPing.pingBedrock()
-                        .address(endpoint.host(), endpoint.port())
+                        .address(dialHost, endpoint.port())
                         .timeout(3000, 3000)
                         .getSync();
                 return MinecraftEndpointStatus.online(endpoint.id(), response.getOnlinePlayers(), response.getMaxPlayers(),
                         plainText(response.getVersionName()), response.getProtocolId(), response.getPing(), plainMotd(response.getMotd()), null,
                         List.of());
             }
-            ResolvedAddress address = resolveJavaAddress(endpoint);
+            ResolvedAddress address = resolveJavaAddress(endpoint, dialHost);
             attempt.target = describeTarget(address.host(), address.port());
             MCPingResponse response = MCPing.pingModern()
                     .address(address.host(), address.port())
@@ -122,7 +217,7 @@ public class MinecraftStatusService implements AutoCloseable {
             return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e, attempt.target));
         } catch (Error e) {
             // ping 库的类加载/链接失败等 Error 也按该线路离线落快照，不允许穿透杀死状态调度循环
-            System.err.println("[minecraft-server] 线路探测异常 " + endpoint.host() + ":" + endpoint.port() + ": " + e);
+            System.err.println("[minecraft-server] 线路探测异常 " + dialHost + ":" + endpoint.port() + ": " + e);
             return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e, attempt.target));
         }
     }
@@ -288,11 +383,12 @@ public class MinecraftStatusService implements AutoCloseable {
         }
     }
 
-    private ResolvedAddress resolveJavaAddress(MinecraftServerEndpoint endpoint) {
+    private ResolvedAddress resolveJavaAddress(MinecraftServerEndpoint endpoint, String host) {
+        String dialHost = host == null || host.isBlank() ? endpoint.host() : host;
         if (!endpoint.automaticPort()) {
-            return new ResolvedAddress(endpoint.host(), endpoint.port());
+            return new ResolvedAddress(dialHost, endpoint.port());
         }
-        return resolveSrv(endpoint.host()).orElseGet(() -> new ResolvedAddress(endpoint.host(), MinecraftEdition.JAVA.defaultPort()));
+        return resolveSrv(dialHost).orElseGet(() -> new ResolvedAddress(dialHost, MinecraftEdition.JAVA.defaultPort()));
     }
 
     private Optional<ResolvedAddress> resolveSrv(String host) {
