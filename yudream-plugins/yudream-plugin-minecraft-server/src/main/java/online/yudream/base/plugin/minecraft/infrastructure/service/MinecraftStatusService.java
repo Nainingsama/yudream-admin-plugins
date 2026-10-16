@@ -26,8 +26,10 @@ public class MinecraftStatusService {
         if (!endpoint.enabled()) {
             return MinecraftEndpointStatus.offline(endpoint.id(), "线路已停用");
         }
+        String target = null;
         try {
             if (endpoint.edition() == MinecraftEdition.BEDROCK) {
+                target = describeTarget(endpoint.host(), endpoint.port());
                 BedrockPingResponse response = MCPing.pingBedrock()
                         .address(endpoint.host(), endpoint.port())
                         .timeout(3000, 3000)
@@ -37,6 +39,7 @@ public class MinecraftStatusService {
                         List.of());
             }
             ResolvedAddress address = resolveJavaAddress(endpoint);
+            target = describeTarget(address.host(), address.port());
             MCPingResponse response = MCPing.pingModern()
                     .address(address.host(), address.port())
                     .timeout(3000, 3000)
@@ -45,27 +48,49 @@ public class MinecraftStatusService {
                     plainText(response.getVersionName()), response.getProtocolId(), response.getPing(), plainMotd(response.getMotd()),
                     favicon(response.getFavicon()), samplePlayers(response));
         } catch (RuntimeException e) {
-            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e));
+            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e, target));
         } catch (Error e) {
             // ping 库的类加载/链接失败等 Error 也按该线路离线落快照，不允许穿透杀死状态调度循环
             System.err.println("[minecraft-server] 线路探测异常 " + endpoint.host() + ":" + endpoint.port() + ": " + e);
-            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e));
+            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e, target));
+        }
+    }
+
+    /**
+     * 面板实际拨号目标：域名解析结果（含 SRV 重定向后的目标）。玩家侧能连而面板侧
+     * 连不上时，第一嫌疑就是两侧解析到的地址不同（内网分割 DNS、显式端口与 SRV 不一致），
+     * 把解析结果带进提示即可一眼比对。
+     */
+    static String describeTarget(String host, int port) {
+        if (host == null || host.isBlank()) {
+            return "";
+        }
+        try {
+            String ip = java.net.InetAddress.getByName(host).getHostAddress();
+            return ip.equals(host) ? host + ":" + port : host + " → " + ip + ":" + port;
+        } catch (java.net.UnknownHostException unresolved) {
+            return host + ":" + port + "（未解析出 IP）";
         }
     }
 
     /**
      * 离线原因取异常链末端根因：mcping 等库习惯用 "Unhandled exception during ping"
      * 之类的通用文案包一层，真因（连接被拒 / 超时 / 协议不支持）只存在于 cause 链末端，
-     * 只看顶层消息无从定位。常见网络失败再补一句中文处置提示。
+     * 只看顶层消息无从定位。常见网络失败再补一句中文处置提示，并附面板实际拨号目标。
      */
     static String failureReason(Throwable error) {
+        return failureReason(error, null);
+    }
+
+    static String failureReason(Throwable error, String target) {
         Throwable cause = error;
         while (cause.getCause() != null && cause.getCause() != cause) {
             cause = cause.getCause();
         }
         String message = cause.getMessage();
         String reason = message == null || message.isBlank() ? cause.getClass().getSimpleName() : message;
-        return reason + hint(cause, reason);
+        String suffix = target == null || target.isBlank() ? "" : "（面板拨号目标 " + target + "）";
+        return reason + hint(cause, reason) + suffix;
     }
 
     /** 常见网络失败的处置提示（原始文案保留，提示只作补充）。 */

@@ -55,4 +55,22 @@ class MinecraftStatusServiceTest {
         };
         assertEquals("自引用", MinecraftStatusService.failureReason(self));
     }
+
+    @Test
+    void failureReasonAppendsDialTargetWhenKnown() {
+        String reason = MinecraftStatusService.failureReason(
+                new ConnectException("Connection refused"), "mc.example.com → 203.0.113.7:41000");
+        // 玩家能连、面板连不上时，靠这段拨号目标比对两侧解析差异
+        assertTrue(reason.contains("面板拨号目标 mc.example.com → 203.0.113.7:41000"));
+    }
+
+    @Test
+    void describeTargetHandlesLiteralIpAndHostname() {
+        // 字面 IP 不重复展示箭头
+        assertEquals("127.0.0.1:25565", MinecraftStatusService.describeTarget("127.0.0.1", 25565));
+        // 域名解析成 IP 时以箭头展示解析结果（localhost 恒定可解析）
+        assertTrue(MinecraftStatusService.describeTarget("localhost", 41000).startsWith("localhost → "));
+        // 无法解析的域名不抛异常，标注未解析
+        assertTrue(MinecraftStatusService.describeTarget("no-such-host.invalid", 41000).contains("未解析出 IP"));
+    }
 }
