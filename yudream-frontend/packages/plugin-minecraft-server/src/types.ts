@@ -48,6 +48,8 @@ export interface MinecraftServerStatus {
   maxPlayers: number
   endpoints: MinecraftEndpointStatus[]
   checkedAt: TimeValue
+  /** 在线判定依据：空＝线路探测；'panel'＝线路均不可达但面板确认绑定的实例在运行。 */
+  source?: string | null
 }
 
 export interface MinecraftStatusSnapshot {

@@ -12,6 +12,8 @@ import online.yudream.base.plugin.minecraft.domain.aggregate.MinecraftPlayerActi
 import online.yudream.base.plugin.minecraft.domain.aggregate.MinecraftServer;
 import online.yudream.base.plugin.minecraft.domain.aggregate.MinecraftServerTopology;
 import online.yudream.base.plugin.minecraft.domain.repo.MinecraftServerRepository;
+import online.yudream.base.plugin.minecraft.domain.valobj.MinecraftEndpointStatus;
+import online.yudream.base.plugin.minecraft.domain.valobj.MinecraftServerStatus;
 import online.yudream.base.plugin.minecraft.domain.valobj.MinecraftServerEndpoint;
 import online.yudream.base.plugin.minecraft.domain.valobj.MinecraftServerMap;
 import online.yudream.base.plugin.minecraft.domain.valobj.MinecraftServerSeason;
@@ -561,6 +563,42 @@ class MinecraftServerAppServiceTest {
 
         // 无回传 → 空视图。
         assertTrue(service.panelView("no-such-server").isEmpty());
+    }
+
+    @Test
+    void refreshStatusFallsBackToPanelStateWhenNoLineReachable() {
+        // 线路探测全部不可达（同机部署的 NAT 回环）：线路返回 offline
+        MinecraftServerEndpoint endpoint = new MinecraftServerEndpoint(null, "主线", "mc.example.com", 41001, null, true, true, 0);
+        MinecraftServer server = new MinecraftServer("server-1", "测试服", "", true, 0,
+                List.of(endpoint), List.of(), null, BASE, BASE);
+        when(repository.findById("server-1")).thenReturn(Optional.of(server));
+        when(repository.saveStatus(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        MinecraftStatusService probing = mock(MinecraftStatusService.class);
+        when(probing.ping(any())).thenReturn(MinecraftEndpointStatus.offline(endpoint.id(), "Connection refused"));
+        PluginContext panelContext = mock(PluginContext.class);
+        when(panelContext.framework()).thenReturn(mock(FrameworkServices.class));
+        when(panelContext.files()).thenReturn(files);
+        MinecraftServerAppService appService =
+                new MinecraftServerAppService(repository, probing, panelContext, files);
+
+        // 面板确认绑定的实例在运行（新鲜帧）→ 按面板容器状态判在线
+        appService.notifyPanelInstanceState("server-1", "inst-1", "running", System.currentTimeMillis());
+        MinecraftServerStatus online = appService.refreshStatus("server-1");
+        assertEquals("ONLINE", online.status());
+        assertEquals("panel", online.source());
+        // 线路失败原因仍保留，便于在提示里看到面板侧实际连的地址
+        assertEquals(1, online.endpoints().size());
+        assertEquals("OFFLINE", online.endpoints().get(0).status());
+
+        // 面板报非运行态 → 不兜底，仍为离线
+        appService.notifyPanelInstanceState("server-1", "inst-1", "exited", System.currentTimeMillis());
+        assertEquals("OFFLINE", appService.refreshStatus("server-1").status());
+
+        // 面板回传过期（超过 5 分钟）→ 不兜底
+        appService.notifyPanelInstanceState("server-1", "inst-1", "running",
+                System.currentTimeMillis() - 10L * 60 * 1000);
+        assertEquals("OFFLINE", appService.refreshStatus("server-1").status());
     }
 
     // ------------------------------------------------------------------ helpers

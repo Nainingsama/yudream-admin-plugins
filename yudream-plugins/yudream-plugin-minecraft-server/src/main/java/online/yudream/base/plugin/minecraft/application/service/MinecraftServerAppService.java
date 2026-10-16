@@ -326,7 +326,13 @@ public class MinecraftServerAppService implements PluginMinecraftService {
         List<MinecraftEndpointStatus> statuses = server.endpoints().stream()
                 .map(statusService::ping)
                 .toList();
-        MinecraftServerStatus status = repository.saveStatus(MinecraftServerStatus.from(server.id(), statuses));
+        MinecraftServerStatus probed = MinecraftServerStatus.from(server.id(), statuses);
+        // 线路全不可达时按面板容器状态兜底：同机部署下面板常因网关 NAT 回环策略连不上
+        // 自己的游戏端口（玩家从外网访问正常），此时面板知道实例在跑，列表不应判离线。
+        MinecraftServerStatus status = !"ONLINE".equals(probed.status()) && panelRunning(server.id())
+                ? MinecraftServerStatus.fromPanel(probed)
+                : probed;
+        status = repository.saveStatus(status);
         repository.saveStatusSnapshot(MinecraftStatusSnapshot.from(status));
         boolean confirmedOffline = !"ONLINE".equals(status.status())
                 && previousStatus != null
@@ -789,6 +795,11 @@ public class MinecraftServerAppService implements PluginMinecraftService {
         view.put("updatedAt", state.updatedAt());
         view.put("stale", !fresh);
         return view;
+    }
+
+    /** 面板（mcpanel）是否确认该服务器绑定的实例在运行且回传新鲜（5 分钟内）。 */
+    private boolean panelRunning(String serverId) {
+        return Boolean.TRUE.equals(panelView(serverId).get("online"));
     }
 
     /**

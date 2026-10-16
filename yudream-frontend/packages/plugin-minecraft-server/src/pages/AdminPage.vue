@@ -40,6 +40,10 @@ function statusTip(server: MinecraftServer): string {
     return '尚无状态快照：面板从未探测成功，请检查线路地址是否可达'
   }
   const parts = [`上次检测 ${props.model.formatTime(status.checkedAt) || '未知'}`]
+  if (status.source === 'panel') {
+    // 同机部署时面板经公网地址连不上自己的游戏端口：按面板容器状态判在线，说明依据
+    parts.push('按面板容器状态判为在线（绑定的实例在运行中；面板自身网络探不到该端口，线路失败原因见下）')
+  }
   // 快照明显过期＝刷新停摆（探测挂起/调度被拖住），明确喊出来而不是只显示一个旧时间
   const checkedAtMs = toMillis(status.checkedAt)
   if (checkedAtMs !== null) {

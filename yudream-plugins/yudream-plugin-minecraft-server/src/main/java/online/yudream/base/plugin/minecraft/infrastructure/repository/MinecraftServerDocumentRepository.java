@@ -641,7 +641,8 @@ public class MinecraftServerDocumentRepository implements MinecraftServerReposit
                 integer(document, "onlinePlayers", 0),
                 integer(document, "maxPlayers", 0),
                 endpoints,
-                number(document, "checkedAt", 0L)
+                number(document, "checkedAt", 0L),
+                string(document, "source")
         );
     }
 

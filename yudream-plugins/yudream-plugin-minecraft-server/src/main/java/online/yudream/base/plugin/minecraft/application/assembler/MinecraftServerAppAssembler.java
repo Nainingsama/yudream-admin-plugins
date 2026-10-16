@@ -124,7 +124,7 @@ public class MinecraftServerAppAssembler {
 
     public MinecraftServerStatusDTO toDTO(MinecraftServerStatus status) {
         return new MinecraftServerStatusDTO(status.serverId(), status.status(), status.onlinePlayers(), status.maxPlayers(),
-                status.endpoints().stream().map(this::toDTO).toList(), status.checkedAt());
+                status.endpoints().stream().map(this::toDTO).toList(), status.checkedAt(), status.source());
     }
 
     public MinecraftStatusSnapshotDTO toDTO(MinecraftStatusSnapshot snapshot) {
