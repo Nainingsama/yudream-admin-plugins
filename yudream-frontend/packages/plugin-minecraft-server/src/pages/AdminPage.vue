@@ -19,6 +19,20 @@ function go(component: 'Editor' | 'Seasons' | 'Operations' | 'Players', id?: str
   return router.push({ path: `/platform/plugins/minecraft-server/admin/${component.toLowerCase()}`, query: id ? { id } : {} })
 }
 async function reload() { await props.model.load(true) }
+/** 时间字段（epoch 毫秒 / ISO 串 / Date）转毫秒，无法识别返回 null。 */
+function toMillis(value: unknown): number | null {
+  if (value instanceof Date) {
+    return value.getTime()
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string' && value) {
+    const parsed = Date.parse(value)
+    return Number.isNaN(parsed) ? null : parsed
+  }
+  return null
+}
 /** 状态列诊断：悬停展示快照检测时间与每条线路的探测结果/失败原因（离线时区分网络不通、地址失效或快照冻结）。 */
 function statusTip(server: MinecraftServer): string {
   const status = server.status
@@ -26,6 +40,14 @@ function statusTip(server: MinecraftServer): string {
     return '尚无状态快照：面板从未探测成功，请检查线路地址是否可达'
   }
   const parts = [`上次检测 ${props.model.formatTime(status.checkedAt) || '未知'}`]
+  // 快照明显过期＝刷新停摆（探测挂起/调度被拖住），明确喊出来而不是只显示一个旧时间
+  const checkedAtMs = toMillis(status.checkedAt)
+  if (checkedAtMs !== null) {
+    const staleMinutes = Math.floor((Date.now() - checkedAtMs) / 60_000)
+    if (staleMinutes >= 5) {
+      parts.push(`快照已过期 ${staleMinutes} 分钟：状态刷新可能停摆，请查看面板日志中 [minecraft-server] 开头的行`)
+    }
+  }
   const items = status.endpoints ?? []
   if (!items.length) {
     parts.push('未配置线路地址：没有任何线路时按离线展示')
