@@ -40,10 +40,11 @@ public record MinecraftServerStatus(
      * 面板容器状态兜底：线路探测全部不可达、但面板（mcpanel）确认该服务器绑定的实例
      * 正在运行——同机部署时面板常因网关 NAT 回环策略连不上自己的游戏端口，此时按容器
      * 状态判在线；在线人数取游戏内上报的在服玩家数（ping 不可达时唯一可信来源），
-     * 上限未知置 0（展示侧按「仅人数」降级）；线路各自的失败原因仍保留在 endpoints 里。
+     * 上限取面板读到的 server.properties max-players（读不到置 0，展示侧按「仅人数」降级）；线路各自的失败原因仍保留在 endpoints 里。
      */
-    public static MinecraftServerStatus fromPanel(MinecraftServerStatus probed, int reportedOnlinePlayers) {
-        return new MinecraftServerStatus(probed.serverId(), "ONLINE", Math.max(reportedOnlinePlayers, 0), 0,
-                probed.endpoints(), probed.checkedAt(), "panel");
+    public static MinecraftServerStatus fromPanel(MinecraftServerStatus probed, int reportedOnlinePlayers,
+                                                  int reportedMaxPlayers) {
+        return new MinecraftServerStatus(probed.serverId(), "ONLINE", Math.max(reportedOnlinePlayers, 0),
+                Math.max(reportedMaxPlayers, 0), probed.endpoints(), probed.checkedAt(), "panel");
     }
 }

@@ -590,13 +590,14 @@ class MinecraftServerAppServiceTest {
                         .quit("Herobrine", BASE + 1_000)));
         when(repository.countPlayerActivities("server-1")).thenReturn(3L);
 
-        // 面板确认绑定的实例在运行（新鲜帧）→ 按面板容器状态判在线，并带出在服人数
-        appService.notifyPanelInstanceState("server-1", "inst-1", "running", System.currentTimeMillis());
+        // 面板确认绑定的实例在运行（新鲜帧）→ 按面板容器状态判在线，并带出在服人数与上限
+        appService.notifyPanelInstanceState("server-1", "inst-1", "running", System.currentTimeMillis(), 20);
         MinecraftServerStatus online = appService.refreshStatus("server-1");
         assertEquals("ONLINE", online.status());
         assertEquals("panel", online.source());
         assertEquals(2, online.onlinePlayers(), "兜底在线时人数取游戏内上报的在服玩家数");
-        assertEquals(0, online.maxPlayers(), "上限未知（无 ping）");
+        assertEquals(20, online.maxPlayers(), "兜底在线时上限取面板读到的 server.properties max-players");
+        assertEquals(20, appService.panelView("server-1").get("maxPlayers"));
         // 线路失败原因仍保留，便于在提示里看到面板侧实际连的地址
         assertEquals(1, online.endpoints().size());
         assertEquals("OFFLINE", online.endpoints().get(0).status());

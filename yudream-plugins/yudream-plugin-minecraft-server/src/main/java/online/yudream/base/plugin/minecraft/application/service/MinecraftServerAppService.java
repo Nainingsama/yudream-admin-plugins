@@ -329,8 +329,10 @@ public class MinecraftServerAppService implements PluginMinecraftService {
         MinecraftServerStatus probed = MinecraftServerStatus.from(server.id(), statuses);
         // 线路全不可达时按面板容器状态兜底：同机部署下面板常因网关 NAT 回环策略连不上
         // 自己的游戏端口（玩家从外网访问正常），此时面板知道实例在跑，列表不应判离线。
+        Object panelMax = panelView(server.id()).get("maxPlayers");
         MinecraftServerStatus status = !"ONLINE".equals(probed.status()) && panelRunning(server.id())
-                ? MinecraftServerStatus.fromPanel(probed, onlinePlayerActivities(server.id()).size())
+                ? MinecraftServerStatus.fromPanel(probed, onlinePlayerActivities(server.id()).size(),
+                        panelMax instanceof Number number ? number.intValue() : 0)
                 : probed;
         status = repository.saveStatus(status);
         repository.saveStatusSnapshot(MinecraftStatusSnapshot.from(status));
@@ -735,19 +737,27 @@ public class MinecraftServerAppService implements PluginMinecraftService {
                 .toList();
     }
 
-    /** mcpanel 回传：迟到旧帧不覆盖新帧；未知子服抛 IllegalArgumentException 交面板计失败。 */
+    /** mcpanel 回传（旧签名）：不带人数上限，等价于上限 0。 */
     @Override
     public boolean notifyPanelInstanceState(String serverId, String instanceId, String panelState, long atMs) {
+        return notifyPanelInstanceState(serverId, instanceId, panelState, atMs, 0);
+    }
+
+    /** mcpanel 回传：迟到旧帧不覆盖新帧；未知子服抛 IllegalArgumentException 交面板计失败。 */
+    @Override
+    public boolean notifyPanelInstanceState(String serverId, String instanceId, String panelState, long atMs,
+                                            int maxPlayers) {
         if (serverId == null || serverId.isBlank() || instanceId == null || instanceId.isBlank()
                 || panelState == null || panelState.isBlank()) {
             throw new IllegalArgumentException("面板状态回传参数不完整");
         }
         requireServer(serverId);
         String normalized = panelState.trim();
+        int normalizedMax = Math.max(maxPlayers, 0);
         PluginMinecraftPanelState previous = panelStates.get(serverId);
         PluginMinecraftPanelState merged = panelStates.compute(serverId, (key, existing) ->
                 existing != null && existing.updatedAt() > atMs ? existing
-                        : new PluginMinecraftPanelState(instanceId, normalized, atMs));
+                        : new PluginMinecraftPanelState(instanceId, normalized, atMs, normalizedMax));
         notifyPowerTransition(serverId, previous, merged, atMs);
         return true;
     }
@@ -793,6 +803,7 @@ public class MinecraftServerAppService implements PluginMinecraftService {
         view.put("state", state.state());
         view.put("instanceId", state.instanceId());
         view.put("updatedAt", state.updatedAt());
+        view.put("maxPlayers", state.maxPlayers());
         view.put("stale", !fresh);
         return view;
     }

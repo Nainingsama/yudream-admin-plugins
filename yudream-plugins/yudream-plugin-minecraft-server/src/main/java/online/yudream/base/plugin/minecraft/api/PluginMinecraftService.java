@@ -70,6 +70,16 @@ public interface PluginMinecraftService {
         return false;
     }
 
+    /**
+     * 同上，另带面板读到的实例人数上限（{@code maxPlayers}，读不到置 0）——ping 不可达时
+     * 面板侧仍能给出上限，供「在线/上限」展示。旧消费者仍用四参重载；旧提供方未实现本
+     * 方法时默认委托四参，行为不变。
+     */
+    default boolean notifyPanelInstanceState(String serverId, String instanceId, String panelState, long atMs,
+                                             int maxPlayers) {
+        return notifyPanelInstanceState(serverId, instanceId, panelState, atMs);
+    }
+
     /** 面板回传的实例状态；从未回传时为空。 */
     default Optional<PluginMinecraftPanelState> minecraftPanelState(String serverId) {
         return Optional.empty();
