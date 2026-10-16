@@ -3,6 +3,7 @@ import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import type { YuDreamPluginSdk } from '@yudream/plugin-sdk'
 import { computed, watch } from 'vue'
 import { useMinecraftServerPlugin } from './composables/useMinecraftServerPlugin'
+import { needsServerFormPrefill, resolveRouteTarget, serverPageKind } from './utils/routeTarget'
 import AdminPage from './pages/AdminPage.vue'
 import DetailPage from './pages/DetailPage.vue'
 import ListPage from './pages/ListPage.vue'
@@ -30,10 +31,24 @@ async function loadCurrentPage() {
   const id = String(props.route?.query?.id || '')
   if (id) model.selectedId = id
   await model.load(isAdminPage.value, !isAdminPage.value && isClosedPage.value)
-  if (page.value === ServerEditorPage) {
-    const selected = model.servers.find(item => item.id === id)
-    if (id && selected) model.editServer(selected)
-    else if (!id) model.newServer()
+  const kind = serverPageKind(componentName.value)
+  if (id) {
+    // 目标服务器可能不在当前页（列表只加载一页）：一律按 id 直接拉详情并把详情并回列表，
+    // 否则第二页起的「编辑」会落到空表单、周目/操作记录/玩家统计会挂错服务器。
+    try {
+      await model.selectServer(id)
+      const target = resolveRouteTarget(model.servers, id)
+      if (target && needsServerFormPrefill(kind)) {
+        // 编辑器与周目页都读 serverForm：按目标服务器预填
+        model.editServer(target)
+      }
+    } catch {
+      // 服务器不存在/无权限：保持列表态，由页面自身呈现空态
+    }
+    return
+  }
+  if (kind === 'editor') {
+    model.newServer()
   }
 }
 
