@@ -37,8 +37,11 @@ public class MinecraftStatusService implements AutoCloseable {
      */
     static final long PROBE_DEADLINE_MS = 8_000L;
 
-    /** 探测执行池：给每次探测套硬上限用；卡死的探测被取消后不影响后续探测。 */
-    private final ExecutorService probePool = Executors.newFixedThreadPool(2, runnable -> {
+    /**
+     * 探测执行池：给每次探测套硬上限用；卡死的探测被取消后不影响后续探测。
+     * 容量略大于调度器的按台并发数，避免健康探测排队被误判成超时。
+     */
+    private final ExecutorService probePool = Executors.newFixedThreadPool(6, runnable -> {
         Thread thread = new Thread(runnable, "minecraft-status-probe");
         thread.setDaemon(true);
         return thread;

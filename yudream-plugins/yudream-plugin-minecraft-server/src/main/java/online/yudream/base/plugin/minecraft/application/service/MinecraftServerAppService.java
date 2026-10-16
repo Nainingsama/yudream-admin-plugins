@@ -363,10 +363,26 @@ public class MinecraftServerAppService implements PluginMinecraftService {
 
     public void refreshEnabledServers() {
         for (MinecraftServer server : allServers(false)) {
-            try {
-                refreshStatus(server.id());
-            } catch (RuntimeException ignored) {
-            }
+            refreshServerQuietly(server.id());
+        }
+    }
+
+    /**
+     * 已启用服务器 id 列表：供调度器按台并发派发刷新（逐台独立，互不阻塞）。
+     */
+    public List<String> enabledServerIds() {
+        return allServers(false).stream().map(MinecraftServer::id).toList();
+    }
+
+    /**
+     * 单台服务器状态刷新：异常与 Error 都在此收敛并打印，避免穿透派发线程
+     * （每台独立刷新时，一台的线路探测挂起/异常不影响其它服务器的时间戳）。
+     */
+    public void refreshServerQuietly(String serverId) {
+        try {
+            refreshStatus(serverId);
+        } catch (RuntimeException | Error error) {
+            System.err.println("[minecraft-server] 状态刷新失败 " + serverId + ": " + error);
         }
     }
 
