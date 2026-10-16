@@ -33,7 +33,11 @@ function statusTip(server: MinecraftServer): string {
   }
   for (const item of items) {
     const endpoint = server.endpoints.find(target => target.id === item.endpointId || target.name === item.endpointId)
-    const address = endpoint ? `${endpoint.host}:${endpoint.port ?? ''}` : item.endpointId
+    // 端口留空（0/null）＝按 SRV 或 Java 默认端口探测，不能显示成 ":0"
+    const port = endpoint?.port === null || endpoint?.port === undefined || endpoint?.port === '' || endpoint?.port === 0
+      ? ''
+      : `:${endpoint.port}`
+    const address = endpoint ? `${endpoint.host}${port}` : item.endpointId
     const detail = item.status === 'ONLINE'
       ? `在线 ${item.onlinePlayers ?? 0}/${item.maxPlayers ?? 0}`
       : (item.errorMessage || '探测失败')

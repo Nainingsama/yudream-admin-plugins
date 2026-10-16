@@ -56,7 +56,7 @@ public class MinecraftStatusService {
     /**
      * 离线原因取异常链末端根因：mcping 等库习惯用 "Unhandled exception during ping"
      * 之类的通用文案包一层，真因（连接被拒 / 超时 / 协议不支持）只存在于 cause 链末端，
-     * 只看顶层消息无从定位。
+     * 只看顶层消息无从定位。常见网络失败再补一句中文处置提示。
      */
     static String failureReason(Throwable error) {
         Throwable cause = error;
@@ -64,7 +64,25 @@ public class MinecraftStatusService {
             cause = cause.getCause();
         }
         String message = cause.getMessage();
-        return message == null || message.isBlank() ? cause.getClass().getSimpleName() : message;
+        String reason = message == null || message.isBlank() ? cause.getClass().getSimpleName() : message;
+        return reason + hint(cause, reason);
+    }
+
+    /** 常见网络失败的处置提示（原始文案保留，提示只作补充）。 */
+    private static String hint(Throwable cause, String reason) {
+        String lowered = reason.toLowerCase(java.util.Locale.ROOT);
+        if (lowered.contains("refused")) {
+            return "（连接被拒绝：该地址端口没有服务监听，或被防火墙/安全组拒绝）";
+        }
+        if (lowered.contains("timed out") || lowered.contains("timeout")) {
+            return "（连接超时：被防火墙/安全组丢包，或服务端未响应）";
+        }
+        if (cause instanceof java.net.UnknownHostException
+                || lowered.contains("unknownhost") || lowered.contains("no such host")
+                || lowered.contains("name or service not known")) {
+            return "（域名解析失败：检查域名拼写与面板宿主的 DNS）";
+        }
+        return "";
     }
 
     private static List<MinecraftEndpointStatus.PlayerInfo> samplePlayers(MCPingResponse response) {
