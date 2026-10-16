@@ -582,11 +582,21 @@ class MinecraftServerAppServiceTest {
         MinecraftServerAppService appService =
                 new MinecraftServerAppService(repository, probing, panelContext, files);
 
-        // 面板确认绑定的实例在运行（新鲜帧）→ 按面板容器状态判在线
+        // 游戏内上报的在服玩家（ping 不可达时唯一可信的人数来源）
+        when(repository.listPlayerActivities(eq("server-1"), anyInt(), anyInt())).thenReturn(List.of(
+                MinecraftPlayerActivity.empty("server-1", "p1", "Steve", BASE).join("Steve", BASE),
+                MinecraftPlayerActivity.empty("server-1", "p2", "Alex", BASE).join("Alex", BASE),
+                MinecraftPlayerActivity.empty("server-1", "p3", "Herobrine", BASE).join("Herobrine", BASE)
+                        .quit("Herobrine", BASE + 1_000)));
+        when(repository.countPlayerActivities("server-1")).thenReturn(3L);
+
+        // 面板确认绑定的实例在运行（新鲜帧）→ 按面板容器状态判在线，并带出在服人数
         appService.notifyPanelInstanceState("server-1", "inst-1", "running", System.currentTimeMillis());
         MinecraftServerStatus online = appService.refreshStatus("server-1");
         assertEquals("ONLINE", online.status());
         assertEquals("panel", online.source());
+        assertEquals(2, online.onlinePlayers(), "兜底在线时人数取游戏内上报的在服玩家数");
+        assertEquals(0, online.maxPlayers(), "上限未知（无 ping）");
         // 线路失败原因仍保留，便于在提示里看到面板侧实际连的地址
         assertEquals(1, online.endpoints().size());
         assertEquals("OFFLINE", online.endpoints().get(0).status());

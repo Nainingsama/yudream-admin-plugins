@@ -330,7 +330,7 @@ public class MinecraftServerAppService implements PluginMinecraftService {
         // 线路全不可达时按面板容器状态兜底：同机部署下面板常因网关 NAT 回环策略连不上
         // 自己的游戏端口（玩家从外网访问正常），此时面板知道实例在跑，列表不应判离线。
         MinecraftServerStatus status = !"ONLINE".equals(probed.status()) && panelRunning(server.id())
-                ? MinecraftServerStatus.fromPanel(probed)
+                ? MinecraftServerStatus.fromPanel(probed, onlinePlayerActivities(server.id()).size())
                 : probed;
         status = repository.saveStatus(status);
         repository.saveStatusSnapshot(MinecraftStatusSnapshot.from(status));

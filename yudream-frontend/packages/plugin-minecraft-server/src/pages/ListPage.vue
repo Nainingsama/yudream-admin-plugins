@@ -9,7 +9,7 @@
     <div class="mc-server-grid">
       <article v-for="server in model.servers" :key="server.id" class="mc-server-card" :class="{ 'is-closed': !server.enabled }">
         <header><div><h3>{{ server.name }}</h3><span>{{ server.currentSeason?.name || '暂无周目' }}</span></div><div class="mc-card-status"><span v-if="!server.enabled" class="mc-closed-badge">已关闭</span><YdTag :variant="server.status?.status === 'ONLINE' ? 'default' : 'secondary'">{{ model.statusText(server.status?.status) }}</YdTag></div></header>
-        <div class="mc-online"><strong>{{ server.status?.onlinePlayers ?? 0 }}</strong><span>/ {{ server.status?.maxPlayers ?? 0 }} 在线</span></div>
+        <div class="mc-online"><strong>{{ server.status?.onlinePlayers ?? 0 }}</strong><span v-if="(server.status?.maxPlayers ?? 0) > 0">/ {{ server.status?.maxPlayers }} 在线</span><span v-else>人在线</span></div>
         <div class="mc-line-list"><div v-for="endpoint in server.endpoints" :key="endpoint.id || endpoint.host" class="mc-line"><span>{{ endpoint.name }}</span><code>{{ model.endpointAddress(endpoint) }}</code></div></div>
         <div class="mc-card-actions"><YdButton as="a" :href="`/platform/plugins/minecraft-server/detail?id=${encodeURIComponent(server.id)}${model.closedSurface ? '&closed=true' : ''}`"><YdIcon name="i-ri:file-info-line" />详情</YdButton></div>
       </article>
