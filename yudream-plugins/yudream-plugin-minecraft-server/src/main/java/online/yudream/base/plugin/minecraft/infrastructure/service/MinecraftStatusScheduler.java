@@ -39,10 +39,16 @@ public class MinecraftStatusScheduler implements AutoCloseable {
         executor = null;
     }
 
-    private void refreshSafely() {
+    /**
+     * 周期刷新入口：必须吞掉一切 Throwable——scheduleWithFixedDelay 的任务一旦抛出
+     * 未捕获异常（含 Error）即被永久取消，此后状态冻结在上次结果（服务器恢复在线
+     * 列表也恒显离线），且无任何报错痕迹。
+     */
+    void refreshSafely() {
         try {
             appService.refreshEnabledServers();
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException | Error error) {
+            System.err.println("[minecraft-server] 状态周期刷新失败: " + error);
         }
     }
 }

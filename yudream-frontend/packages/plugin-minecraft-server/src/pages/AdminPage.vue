@@ -3,7 +3,7 @@ import type { TableColumn } from '@yudream/components'
 import type { MinecraftServer } from '../types'
 import type { MinecraftServerPluginModel } from '../composables/useMinecraftServerPlugin'
 import { useRouter } from 'vue-router'
-import { YdButton, YdCard, YdIcon, YdPageHeader, YdPageMain, YdPagination, YdResponsiveTable, YdSearchBar, YdTag, useYdModal } from '@yudream/components'
+import { YdButton, YdCard, YdIcon, YdPageHeader, YdPageMain, YdPagination, YdResponsiveTable, YdSearchBar, YdTag, YdTooltip, useYdModal } from '@yudream/components'
 
 const props = defineProps<{ model: MinecraftServerPluginModel }>()
 const router = useRouter()
@@ -19,6 +19,28 @@ function go(component: 'Editor' | 'Seasons' | 'Operations' | 'Players', id?: str
   return router.push({ path: `/platform/plugins/minecraft-server/admin/${component.toLowerCase()}`, query: id ? { id } : {} })
 }
 async function reload() { await props.model.load(true) }
+/** 状态列诊断：悬停展示快照检测时间与每条线路的探测结果/失败原因（离线时区分网络不通、地址失效或快照冻结）。 */
+function statusTip(server: MinecraftServer): string {
+  const status = server.status
+  if (!status) {
+    return '尚无状态快照：面板从未探测成功，请检查线路地址是否可达'
+  }
+  const parts = [`上次检测 ${props.model.formatTime(status.checkedAt) || '未知'}`]
+  const items = status.endpoints ?? []
+  if (!items.length) {
+    parts.push('未配置线路地址：没有任何线路时按离线展示')
+    return parts.join(' · ')
+  }
+  for (const item of items) {
+    const endpoint = server.endpoints.find(target => target.id === item.endpointId || target.name === item.endpointId)
+    const address = endpoint ? `${endpoint.host}:${endpoint.port ?? ''}` : item.endpointId
+    const detail = item.status === 'ONLINE'
+      ? `在线 ${item.onlinePlayers ?? 0}/${item.maxPlayers ?? 0}`
+      : (item.errorMessage || '探测失败')
+    parts.push(`${address} ${detail}`)
+  }
+  return parts.join(' · ')
+}
 function confirmToggleServer(server: MinecraftServer) {
   const ending = server.enabled
   modal.confirm({
@@ -39,7 +61,7 @@ function confirmToggleServer(server: MinecraftServer) {
     <YdResponsiveTable row-key="id" table-root-class="max-w-full overflow-x-auto rounded-lg" table-class="min-w-[980px]" border stripe column-visibility :columns="columns" :data="model.servers">
       <template #toolbar><YdSearchBar class="w-full"><div class="flex justify-end gap-2"><YdButton variant="outline" :loading="model.loading" @click="reload"><YdIcon name="i-ri:refresh-line" />刷新</YdButton></div></YdSearchBar></template>
       <template #cell-name="{ row }"><div class="grid gap-1"><strong>{{ row.original.name }}</strong><span class="font-mono text-xs text-muted-foreground">ID: {{ row.original.id }}</span></div></template>
-      <template #cell-status="{ row }"><YdTag :variant="row.original.status?.status === 'ONLINE' ? 'default' : 'secondary'">{{ model.statusText(row.original.status?.status) }}</YdTag></template>
+      <template #cell-status="{ row }"><YdTooltip :text="statusTip(row.original)"><YdTag :variant="row.original.status?.status === 'ONLINE' ? 'default' : 'secondary'">{{ model.statusText(row.original.status?.status) }}</YdTag></YdTooltip></template>
       <template #cell-enabled="{ row }">{{ row.original.enabled ? '启用' : '停用' }}</template>
       <template #cell-operation="{ row }"><div class="flex flex-wrap justify-center gap-2"><YdButton size="sm" :variant="row.original.enabled ? 'destructive' : 'outline'" :loading="model.saving" @click="confirmToggleServer(row.original)">{{ row.original.enabled ? '结束服务器' : '恢复运营' }}</YdButton><YdButton size="sm" variant="outline" @click="go('Editor', row.original.id)">编辑</YdButton><YdButton size="sm" variant="outline" @click="go('Seasons', row.original.id)">周目</YdButton><YdButton size="sm" variant="outline" @click="go('Operations', row.original.id)">操作记录</YdButton><YdButton size="sm" variant="outline" @click="go('Players', row.original.id)">玩家统计</YdButton></div></template>
       <template #card="{ row }">

@@ -46,6 +46,10 @@ public class MinecraftStatusService {
                     favicon(response.getFavicon()), samplePlayers(response));
         } catch (RuntimeException e) {
             return MinecraftEndpointStatus.offline(endpoint.id(), e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+        } catch (Error e) {
+            // ping 库的类加载/链接失败等 Error 也按该线路离线落快照，不允许穿透杀死状态调度循环
+            System.err.println("[minecraft-server] 线路探测异常 " + endpoint.host() + ":" + endpoint.port() + ": " + e);
+            return MinecraftEndpointStatus.offline(endpoint.id(), e.getClass().getSimpleName());
         }
     }
 
