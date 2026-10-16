@@ -45,12 +45,26 @@ public class MinecraftStatusService {
                     plainText(response.getVersionName()), response.getProtocolId(), response.getPing(), plainMotd(response.getMotd()),
                     favicon(response.getFavicon()), samplePlayers(response));
         } catch (RuntimeException e) {
-            return MinecraftEndpointStatus.offline(endpoint.id(), e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e));
         } catch (Error e) {
             // ping 库的类加载/链接失败等 Error 也按该线路离线落快照，不允许穿透杀死状态调度循环
             System.err.println("[minecraft-server] 线路探测异常 " + endpoint.host() + ":" + endpoint.port() + ": " + e);
-            return MinecraftEndpointStatus.offline(endpoint.id(), e.getClass().getSimpleName());
+            return MinecraftEndpointStatus.offline(endpoint.id(), failureReason(e));
         }
+    }
+
+    /**
+     * 离线原因取异常链末端根因：mcping 等库习惯用 "Unhandled exception during ping"
+     * 之类的通用文案包一层，真因（连接被拒 / 超时 / 协议不支持）只存在于 cause 链末端，
+     * 只看顶层消息无从定位。
+     */
+    static String failureReason(Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        String message = cause.getMessage();
+        return message == null || message.isBlank() ? cause.getClass().getSimpleName() : message;
     }
 
     private static List<MinecraftEndpointStatus.PlayerInfo> samplePlayers(MCPingResponse response) {
